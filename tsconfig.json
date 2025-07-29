@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    /* React / JSX */
+    "jsx": "react-jsx",
+
+    /* Type-safety */
+    "strict": true,
+
+    /* Output targets */
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+
+    /* 🔑  FIXES  */
+    "moduleResolution": "Node",            // let TS resolve node_modules normally
+    "allowSyntheticDefaultImports": true,  // allow  `import React from "react"`
+    "esModuleInterop": true,               // emit-default-interop at build
+
+    /* Path alias */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}
