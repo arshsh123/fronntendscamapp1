@@ -1,186 +1,408 @@
-import React, { useRef, useEffect, useMemo } from "react";
+import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { OrbitControls, useTexture, Stars } from "@react-three/drei";
 
-/* ------------------------------------------------------------------ */
-/* TYPES                                                              */
-/* ------------------------------------------------------------------ */
-interface Props {
-  userLocation: { lat: number; lng: number } | null;
-  isZooming: boolean;
-  onZoomComplete: () => void;
-}
-
-/* ------------------------------------------------------------------ */
-/* HELPERS                                                            */
-/* ------------------------------------------------------------------ */
-function latLonToVector3(lat: number, lon: number, radius: number): THREE.Vector3 {
-  const phi   = (90 - lat) * (Math.PI / 180);
-  const theta = (lon + 180) * (Math.PI / 180);
-
-  const x = -(radius * Math.sin(phi) * Math.cos(theta));
-  const z =   radius * Math.sin(phi) * Math.sin(theta);
-  const y =   radius * Math.cos(phi);
-
-  return new THREE.Vector3(x, y, z);
-}
-
-/* ------------------------------------------------------------------ */
-/* COMPONENT                                                          */
-/* ------------------------------------------------------------------ */
-export default function GlobeComponent({ userLocation, isZooming, onZoomComplete }: Props) {
-  /* Refs */
-  const mountRef     = useRef<HTMLDivElement | null>(null);
-  const globeRef     = useRef<THREE.Mesh | null>(null);
-  const rendererRef  = useRef<THREE.WebGLRenderer | null>(null);
-  const cameraRef    = useRef<THREE.PerspectiveCamera | null>(null);
-  const animationId  = useRef<number | null>(null);
-
-  /* Textures  – replace these with local imports if you bundle assets */
-  const textureLoader   = useMemo(() => new THREE.TextureLoader(), []);
-  const earthTexture    = useMemo(() => textureLoader.load("https://threejs.org/examples/textures/land_ocean_ice_cloud_2048.jpg"), [textureLoader]);
-  const bumpTexture     = useMemo(() => textureLoader.load("https://threejs.org/examples/textures/earth_bump.jpg"),               [textureLoader]);
-  const specularTexture = useMemo(() => textureLoader.load("https://threejs.org/examples/textures/water.png"),                    [textureLoader]);
-
-  /* ------------------------------ SCENE SETUP ------------------------------ */
-  useEffect(() => {
-    const scene    = new THREE.Scene();
-    const camera   = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
-    camera.position.z = 3.5;
-    cameraRef.current = camera;
-
-    /* renderer – responsive size */
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    const setRendererSize = () => {
-      const SIZE = Math.min(window.innerWidth * 0.9, 360); // 90 % of vw, max 360 px
-      renderer.setSize(SIZE, SIZE);
-      camera.aspect = 1;  // square canvas keeps math simple
-      camera.updateProjectionMatrix();
-    };
-    setRendererSize();
-    renderer.setPixelRatio(window.devicePixelRatio);
-    rendererRef.current = renderer;
-
-    if (mountRef.current) mountRef.current.appendChild(renderer.domElement);
-
-    /* stars */
-    const starVertices: number[] = [];
-    for (let i = 0; i < 10_000; i++) {
-      starVertices.push(
-        THREE.MathUtils.randFloatSpread(200),
-        THREE.MathUtils.randFloatSpread(200),
-        THREE.MathUtils.randFloatSpread(200)
-      );
-    }
-    const stars = new THREE.Points(
-      new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(starVertices, 3)),
-      new THREE.PointsMaterial({ color: 0xffffff, size: 0.05, opacity: 0.8, transparent: true })
-    );
-    scene.add(stars);
-
-    /* earth */
-    const globe = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 64, 64),
-      new THREE.MeshPhongMaterial({
-        map: earthTexture,
-        bumpMap: bumpTexture,
-        bumpScale: 0.02,
-        specularMap: specularTexture,
-        specular: new THREE.Color("grey"),
-        shininess: 10,
-      })
-    );
-    scene.add(globe);
-    globeRef.current = globe;
-
-    /* atmosphere */
-    const atmosphere = new THREE.Mesh(
-      new THREE.SphereGeometry(1.04, 64, 64),
+/* ----------------------------- Enhanced Atmosphere Glow ----------------------------- */
+function Atmosphere() {
+  const material = useMemo(
+    () =>
       new THREE.ShaderMaterial({
-        vertexShader: `varying vec3 vNormal; void main(){vNormal=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
-        fragmentShader: `varying vec3 vNormal; void main(){float i=pow(0.6-dot(vNormal,vec3(0,0,1)),2.0); gl_FragColor=vec4(0.3,0.6,1.0,1.0)*i;}`,
+        vertexShader: `
+          varying vec3 vNormal;
+          void main() {
+            vNormal = normalize(normalMatrix * normal);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }`,
+        fragmentShader: `
+          varying vec3 vNormal;
+          void main() {
+            float intensity = pow(0.7 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.5);
+            gl_FragColor = vec4(0.3, 0.6, 1.0, 1.0) * intensity;
+          }`,
         blending: THREE.AdditiveBlending,
         side: THREE.BackSide,
         transparent: true,
-      })
-    );
-    scene.add(atmosphere);
+      }),
+    []
+  );
 
-    /* user marker */
-    if (userLocation) {
-      const marker = new THREE.Mesh(
-        new THREE.SphereGeometry(0.015, 20, 20),
-        new THREE.MeshBasicMaterial({ color: 0x00aaff })
-      );
-      marker.position.copy(latLonToVector3(userLocation.lat, userLocation.lng, 1.01));
-      globe.add(marker);
+  return (
+    <mesh scale={1.06}>
+      <sphereGeometry args={[1, 64, 64]} />
+      <primitive object={material} attach="material" />
+    </mesh>
+  );
+}
+
+/* ----------------------------- Subtle Starfield Background ----------------------------- */
+function StarField() {
+  return (
+    <Stars
+      radius={300}
+      depth={60}
+      count={800}
+      factor={3}
+      saturation={0}
+      fade={true}
+      speed={0.3}
+    />
+  );
+}
+
+/* --------------------------------- Enhanced Earth ---------------------------------- */
+function EarthMesh({
+  autoRotate = true,
+  globeScale = 1.0,
+  forceSolid = false,
+  rotationSpeed = 0.02,
+}: {
+  autoRotate?: boolean;
+  globeScale?: number;
+  forceSolid?: boolean;
+  rotationSpeed?: number;
+}) {
+  const group = useRef<THREE.Group>(null!);
+  const cloudsRef = useRef<THREE.Mesh>(null!);
+  const [isHovered, setIsHovered] = useState(false);
+  const [isDocumentHidden, setIsDocumentHidden] = useState(false);
+  
+  const [colorMap, normalMap, roughnessMap, cloudsMap] = useTexture([
+    "/earth/earth_albedo_4k.jpg",
+    "/earth/earth_normal_4k.jpg", 
+    "/earth/earth_roughness_4k.jpg",
+    "/earth/earth_clouds_4k.png",
+  ]) as unknown as THREE.Texture[];
+  
+  const texturesLoaded = !!(colorMap && normalMap && roughnessMap);
+
+  // Enhanced texture settings for premium quality
+  [colorMap, normalMap, roughnessMap, cloudsMap]?.forEach?.((texture: THREE.Texture) => {
+    if (texture) {
+      texture.anisotropy = 16; // Higher anisotropy for sharper detail
+      texture.generateMipmaps = true;
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.magFilter = THREE.LinearFilter;
     }
+  });
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
-    const dir = new THREE.DirectionalLight(0xffffff, 1);
-    dir.position.set(5, 3, 5);
-    scene.add(dir);
-
-    /* animation loop */
-    const animate = () => {
-      animationId.current = requestAnimationFrame(animate);
-      if (!isZooming) {
-        globe.rotation.y += 0.0008;
-        stars.rotation.y += 0.0001;
-      }
-      renderer.render(scene, camera);
-    };
-    animate();
-
-    /* resize listener */
-    window.addEventListener("resize", setRendererSize);
-
-    /* cleanup */
-    return () => {
-      if (animationId.current) cancelAnimationFrame(animationId.current);
-      window.removeEventListener("resize", setRendererSize);
-      renderer.dispose();
-      if (mountRef.current) mountRef.current.removeChild(renderer.domElement);
-    };
-  }, [earthTexture, bumpTexture, specularTexture, userLocation, isZooming]);
-
-  /* ------------------------------ ZOOM LOGIC ------------------------------- */
+  // Pause animation when document is hidden
   useEffect(() => {
-    if (!isZooming || !userLocation || !globeRef.current || !cameraRef.current) return;
-
-    const globe  = globeRef.current;
-    const camera = cameraRef.current;
-
-    const targetPos = latLonToVector3(userLocation.lat, userLocation.lng, 1);
-    const temp     = new THREE.Object3D();
-    temp.position.copy(targetPos);
-    temp.lookAt(new THREE.Vector3());
-    const targetRotation = new THREE.Quaternion().setFromRotationMatrix(temp.matrix)
-                                .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), Math.PI));
-
-    const startRotation  = globe.quaternion.clone();
-    const startCamZ      = camera.position.z;
-    const duration       = 2000;
-    const startTime      = Date.now();
-
-    const zoom = () => {
-      const t   = Math.min((Date.now() - startTime) / duration, 1);
-      const e   = 1 - Math.pow(1 - t, 5); // easeOutQuint
-
-      globe.quaternion.slerpQuaternions(startRotation, targetRotation, e);
-      camera.position.z = startCamZ - 2.5 * e;
-      camera.fov        = 45 - 30 * e;
-      camera.updateProjectionMatrix();
-
-      if (t < 1) {
-        animationId.current = requestAnimationFrame(zoom);
-      } else {
-        setTimeout(onZoomComplete, 300);
-      }
+    const handleVisibilityChange = () => {
+      setIsDocumentHidden(document.hidden);
     };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
 
-    if (animationId.current) cancelAnimationFrame(animationId.current);
-    zoom();
-  }, [isZooming, userLocation, onZoomComplete]);
+  useFrame((_, dt) => {
+    if (autoRotate && group.current && !isHovered && !isDocumentHidden) {
+      group.current.rotation.y += dt * rotationSpeed;
+      // Subtle independent cloud rotation for realism
+      if (cloudsRef.current) {
+        cloudsRef.current.rotation.y += dt * (rotationSpeed * 1.05);
+      }
+    }
+  });
 
-  return <div ref={mountRef} className="mx-auto" />;
+  return (
+    <group 
+      ref={group} 
+      scale={globeScale}
+      onPointerEnter={() => setIsHovered(true)}
+      onPointerLeave={() => setIsHovered(false)}
+      // Center the group at origin
+      position={[0, 0, 0]}
+    >
+      {/* Enhanced Cloud Layer */}
+      {!forceSolid && texturesLoaded && cloudsMap && (
+        <mesh ref={cloudsRef} scale={1.012}>
+          <sphereGeometry args={[1, 64, 64]} />
+          <meshStandardMaterial 
+            map={cloudsMap} 
+            transparent 
+            opacity={0.8}
+            depthWrite={false}
+            alphaTest={0.1}
+          />
+        </mesh>
+      )}
+
+      {/* Main Earth Sphere */}
+      <mesh>
+        <sphereGeometry args={[1, 128, 128]} />
+        {forceSolid ? (
+          <meshStandardMaterial 
+            color="#2563EB" 
+            roughness={0.8} 
+            metalness={0.1}
+            emissive="#001122"
+            emissiveIntensity={0.1}
+          />
+        ) : texturesLoaded ? (
+          <meshStandardMaterial
+            map={colorMap}
+            normalMap={normalMap}
+            roughnessMap={roughnessMap}
+            roughness={0.9}
+            metalness={0.05}
+            normalScale={new THREE.Vector2(1.2, 1.2)}
+          />
+        ) : (
+          <meshStandardMaterial 
+            color="#2563EB" 
+            roughness={0.8} 
+            metalness={0.1}
+            emissive="#001122"
+            emissiveIntensity={0.1}
+          />
+        )}
+      </mesh>
+
+      {/* Enhanced Atmosphere only when textures loaded */}
+      {!forceSolid && texturesLoaded && <Atmosphere />}
+    </group>
+  );
+}
+
+/* ---------------------------- Smooth Zoom-to-Scan Controller -------------------------- */
+function ZoomController({
+  zoom,
+  onDone,
+  startZ = 3.0,
+  endZ = 1.5,
+  duration = 0.6,
+}: {
+  zoom: boolean;
+  onDone?: () => void;
+  startZ?: number;
+  endZ?: number;
+  duration?: number;
+}) {
+  const { camera } = useThree();
+  const tRef = useRef(0);
+  const [active, setActive] = useState(false);
+
+  useEffect(() => {
+    if (zoom) {
+      setActive(true);
+      tRef.current = 0;
+      camera.position.set(0, 0, startZ);
+    }
+  }, [zoom, camera, startZ]);
+
+  useFrame((_, dt) => {
+    if (!active) return;
+    tRef.current += dt;
+    const t = Math.min(tRef.current / duration, 1);
+    
+    // Enhanced easing curve for cinematic feel
+    const eased = t < 0.5 
+      ? 4 * t * t * t 
+      : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    
+    camera.position.z = THREE.MathUtils.lerp(startZ, endZ, eased);
+    camera.lookAt(0, 0, 0);
+    
+    if (t >= 1) {
+      setActive(false);
+      onDone?.();
+    }
+  });
+  
+  return null;
+}
+
+/* ------------------------------ Enhanced Renderer & Environment ---------------------------- */
+function RendererTweak() {
+  const { gl, scene, camera, size } = useThree();
+  
+     useEffect(() => {
+     // Enhanced renderer settings for premium quality
+     gl.setClearColor(0x000000, 0);
+     gl.shadowMap.enabled = true;
+     gl.shadowMap.type = THREE.PCFSoftShadowMap;
+     
+     // Add subtle fog for depth
+     scene.fog = new THREE.Fog(0x000000, 8, 15);
+     scene.background = null;
+   }, [gl, scene]);
+  
+  return null;
+}
+
+/* ----------------------------- Enhanced Lighting Setup ----------------------------- */
+function LightingRig() {
+  return (
+    <>
+      {/* Key light - simulates sun */}
+      <directionalLight 
+        position={[5, 3, 5]} 
+        intensity={1.2}
+        castShadow
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+      />
+      
+      {/* Fill light - softer ambient */}
+      <ambientLight intensity={0.4} />
+      
+      {/* Rim light for atmosphere enhancement */}
+      <pointLight 
+        position={[-5, -3, -5]} 
+        intensity={0.3}
+        color="#60A5FA"
+      />
+    </>
+  );
+}
+
+/* ------------------------------ Main Enhanced Component ----------------------------- */
+export default function GlobeComponent({
+  className = "",
+  zoom = false,
+  onZoomComplete,
+  allowUserRotate = true,
+  forceSolid = false,
+  debugBasic = false,
+  showStars = true,
+  size,
+  dpr,
+}: {
+  className?: string;
+  zoom?: boolean;
+  onZoomComplete?: () => void;
+  allowUserRotate?: boolean;
+  forceSolid?: boolean;
+  debugBasic?: boolean;
+  showStars?: boolean;
+  size?: number;
+  dpr?: [number, number];
+}) {
+  const [webglOK, setWebglOK] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    try {
+      const canvas = document.createElement("canvas");
+      const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+      if (!gl) {
+        setWebglOK(false);
+      }
+    } catch {
+      setWebglOK(false);
+    }
+    
+    // Simulate loading time for smoother experience
+    const timer = setTimeout(() => setIsLoading(false), 500);
+    return () => clearTimeout(timer);
+  }, []);
+
+     if (!webglOK) {
+     return (
+       <div className={`w-full h-full relative flex items-center justify-center ${className}`}>
+         <div 
+           className="w-full h-full rounded-full bg-gradient-to-br from-blue-600 to-blue-800 border border-blue-500/30 shadow-lg flex items-center justify-center"
+           style={{
+             background: 'radial-gradient(circle at 30% 30%, #3B82F6, #1E40AF)',
+           }}
+         >
+           <div className="text-white/60 text-center">
+             <div className="text-2xl mb-2">🌍</div>
+             <div className="text-sm">WebGL not supported</div>
+           </div>
+         </div>
+       </div>
+     );
+   }
+
+    return (
+    <div className={`w-full h-full relative ${className}`}>
+      <Canvas
+        gl={{ 
+          antialias: true, 
+          alpha: true, 
+          powerPreference: "high-performance",
+          preserveDrawingBuffer: false
+        }}
+        dpr={dpr ?? [1, 2]}
+        resize={{ scroll: false, debounce: 0 }}
+        camera={{ 
+          position: [0, 0, 3.0], 
+          fov: 45, 
+          near: 0.1, 
+          far: 1000
+        }}
+        style={{
+          display: 'block',
+          width: size ?? '100%',
+          height: size ?? '100%',
+        }}
+      >
+        <RendererTweak />
+        
+        <Suspense 
+          fallback={
+            <mesh position={[0, 0, 0]}>
+              <sphereGeometry args={[1, 32, 32]} />
+              <meshBasicMaterial color="#2563EB" wireframe />
+            </mesh>
+          }
+        >
+          {debugBasic ? (
+            <mesh position={[0, 0, 0]}>
+              <sphereGeometry args={[1, 32, 32]} />
+              <meshBasicMaterial wireframe color="#60A5FA" />
+            </mesh>
+          ) : (
+            <>
+              {showStars && <StarField />}
+              <LightingRig />
+              
+              <EarthMesh 
+                autoRotate={!zoom} 
+                globeScale={1.0} 
+                forceSolid={forceSolid}
+                rotationSpeed={0.02}
+              />
+              
+              <ZoomController 
+                zoom={zoom} 
+                onDone={onZoomComplete}
+                startZ={3.0}
+                endZ={1.5}
+                duration={0.6}
+              />
+            </>
+          )}
+
+          <OrbitControls
+            enableZoom={false}
+            enablePan={false}
+            enableRotate={allowUserRotate && !zoom}
+            enableDamping
+            dampingFactor={0.05}
+            rotateSpeed={0.5}
+            minDistance={1.5}
+            maxDistance={8}
+            minPolarAngle={Math.PI * 0.2}
+            maxPolarAngle={Math.PI * 0.8}
+            // Ensure controls are centered
+            target={[0, 0, 0]}
+          />
+        </Suspense>
+      </Canvas>
+      
+      {/* Loading overlay */}
+      {isLoading && (
+        <div className="absolute inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center rounded-xl">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <div className="text-white/70 text-sm">Loading globe...</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

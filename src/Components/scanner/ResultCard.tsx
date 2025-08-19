@@ -4,9 +4,30 @@ import { X, Camera, ArrowLeft, MapPin, CheckCircle, AlertTriangle, Brain, Zap } 
 import { Button } from "@/Components/ui/button";
 import { Card, CardContent } from "@/Components/ui/card";
 
-export default function ResultCard({ result, onClose, onScanAgain }) {
+interface ScanItem {
+  name: string; emoji: string; detectedPrice: number; localPrice: number;
+  currency: string; localRange: string; overpricePercentage: number;
+  insight: string; region: string;
+}
+
+export default function ResultCard({ 
+  result, 
+  onClose, 
+  onScanAgain 
+}: { 
+  result: ScanItem; 
+  onClose: () => void; 
+  onScanAgain: () => void; 
+}) {
   const [typewriterText, setTypewriterText] = useState("");
   const [priceAnimationComplete, setPriceAnimationComplete] = useState(false);
+  const [showSkeletons, setShowSkeletons] = useState(false);
+
+  // Show skeletons after 400ms if data is still loading
+  useEffect(() => {
+    const timer = setTimeout(() => setShowSkeletons(true), 400);
+    return () => clearTimeout(timer);
+  }, []);
 
   const isOverpriced = result.overpricePercentage > 20;
   const isFairDeal = result.overpricePercentage <= 20 && result.overpricePercentage >= -10;
@@ -77,7 +98,7 @@ export default function ResultCard({ result, onClose, onScanAgain }) {
       "Varanasi": `Near the ghats, locals pay ${result.currency}${Math.round(result.localPrice * 0.9)}–${result.currency}${Math.round(result.localPrice * 1.1)}`
     };
     
-    return locationSpecific[result.region] || baseInsight;
+    return (locationSpecific as Record<string, string>)[result.region] || baseInsight;
   };
 
   const status = getStatusConfig();
@@ -168,9 +189,13 @@ export default function ResultCard({ result, onClose, onScanAgain }) {
               }}
               className="text-center mb-5"
             >
-              <div className="text-7xl font-black text-gray-900 tracking-tight">
-                {result.currency}{result.detectedPrice}
-              </div>
+              {showSkeletons ? (
+                <div className="text-7xl font-black text-gray-900 tracking-tight">
+                  {result.currency}{result.detectedPrice}
+                </div>
+              ) : (
+                <div className="h-20 bg-gray-200 rounded-lg animate-pulse" />
+              )}
             </motion.div>
 
             {/* 4. Price Label (Pill-style) */}
@@ -211,38 +236,53 @@ export default function ResultCard({ result, onClose, onScanAgain }) {
               </div>
               
               <div className="relative h-6 bg-gray-100 rounded-full overflow-hidden">
-                {/* Background zones */}
-                <div className="absolute inset-0 bg-gradient-to-r from-green-200 via-yellow-200 to-red-200"></div>
-                
-                {/* Local price range indicator */}
-                <motion.div 
-                  className="absolute top-1 bottom-1 bg-green-400 rounded-full opacity-80"
-                  style={{ 
-                    left: `${Math.max(localPosition - 8, 2)}%`,
-                    width: `16%`
-                  }}
-                  initial={{ width: 0 }}
-                  animate={{ width: "16%" }}
-                  transition={{ delay: 1.8, duration: 0.8 }}
-                />
-                
-                {/* User price marker */}
-                <motion.div 
-                  className={`absolute top-0 bottom-0 w-1 ${isOverpriced ? 'bg-orange-600' : isUnderpriced ? 'bg-emerald-600' : 'bg-green-600'} rounded-full`}
-                  style={{ left: `${Math.min(Math.max(userPosition, 1), 99)}%` }}
-                  initial={{ scale: 0, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  transition={{ delay: 2.0, type: "spring" }}
-                >
-                  <div className={`absolute -top-2 -left-2 w-5 h-10 ${isOverpriced ? 'bg-orange-600' : isUnderpriced ? 'bg-emerald-600' : 'bg-green-600'} rounded-full flex items-center justify-center text-xs text-white font-bold shadow-lg`}>
-                    {isOverpriced ? '⚠️' : '✅'}
-                  </div>
-                </motion.div>
+                {showSkeletons ? (
+                  <>
+                    {/* Background zones */}
+                    <div className="absolute inset-0 bg-gradient-to-r from-green-200 via-yellow-200 to-red-200"></div>
+                    
+                    {/* Local price range indicator */}
+                    <motion.div 
+                      className="absolute top-1 bottom-1 bg-green-400 rounded-full opacity-80"
+                      style={{ 
+                        left: `${Math.max(localPosition - 8, 2)}%`,
+                        width: `16%`
+                      }}
+                      initial={{ width: 0 }}
+                      animate={{ width: "16%" }}
+                      transition={{ delay: 1.8, duration: 0.8 }}
+                    />
+                    
+                    {/* User price marker */}
+                    <motion.div 
+                      className={`absolute top-0 bottom-0 w-1 ${isOverpriced ? 'bg-orange-600' : isUnderpriced ? 'bg-emerald-600' : 'bg-green-600'} rounded-full`}
+                      style={{ left: `${Math.min(Math.max(userPosition, 1), 99)}%` }}
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      transition={{ delay: 2.0, type: "spring" }}
+                    >
+                      <div className={`absolute -top-2 -left-2 w-5 h-10 ${isOverpriced ? 'bg-orange-600' : isUnderpriced ? 'bg-emerald-600' : 'bg-green-600'} rounded-full flex items-center justify-center text-xs text-white font-bold shadow-lg`}>
+                        {isOverpriced ? '⚠️' : '✅'}
+                      </div>
+                    </motion.div>
+                  </>
+                ) : (
+                  <div className="absolute inset-0 bg-gray-200 animate-pulse" />
+                )}
               </div>
               
               <div className="flex justify-between text-xs text-gray-500 mt-2">
-                <span>👥 Local: {result.currency}{result.localPrice}</span>
-                <span>📍 You: {result.currency}{result.detectedPrice}</span>
+                {showSkeletons ? (
+                  <>
+                    <span>👥 Local: {result.currency}{result.localPrice}</span>
+                    <span>📍 You: {result.currency}{result.detectedPrice}</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="h-4 w-20 bg-gray-200 rounded animate-pulse" />
+                    <div className="h-4 w-20 bg-gray-200 rounded animate-pulse" />
+                  </>
+                )}
               </div>
             </motion.div>
 
@@ -279,9 +319,8 @@ export default function ResultCard({ result, onClose, onScanAgain }) {
               
               {/* Secondary Button */}
               <Button
-                variant="outline"
                 onClick={onClose}
-                className="w-full h-12 text-gray-600 border-gray-300 hover:bg-gray-50 rounded-xl transition-all duration-200 font-medium"
+                className="w-full h-12 text-gray-600 border border-gray-300 hover:bg-gray-50 rounded-xl transition-all duration-200 font-medium"
               >
                 <ArrowLeft className="w-4 h-4 mr-2" />
                 Back to Map
@@ -289,7 +328,6 @@ export default function ResultCard({ result, onClose, onScanAgain }) {
 
               {/* Optional Button (Greyed) */}
               <Button
-                variant="ghost"
                 disabled
                 className="w-full h-10 text-gray-400 rounded-xl cursor-not-allowed opacity-50"
               >

@@ -1,290 +1,328 @@
 // src/Pages/Scanner.tsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Scan } from "lucide-react";
-import { Button } from "@/Components/ui/button";
-
+import { Scan, Upload } from "lucide-react";
 import GlobeComponent from "@/Components/scanner/GlobeComponent";
-import CameraView   from "@/Components/scanner/CameraView";
-import ResultCard   from "@/Components/scanner/ResultCard";
+import CameraView from "@/Components/scanner/CameraView";
+import ResultCard from "@/Components/scanner/ResultCard";
+import { useResponsiveSize } from "@/lib/useResponsiveSize";
 
-/* ------------------------------------------------------------------ */
-/* TYPES                                                              */
-/* ------------------------------------------------------------------ */
-interface Location {
-  lat: number;
-  lng: number;
-}
-
+/* ---------------------------- Types ---------------------------- */
+interface Location { lat: number; lng: number; }
 interface ScanItem {
-  name: string;
-  emoji: string;
-  detectedPrice: number;
-  localPrice: number;
-  currency: string;
-  localRange: string;
-  overpricePercentage: number;
-  insight: string;
-  region: string;
+  name: string; emoji: string; detectedPrice: number; localPrice: number;
+  currency: string; localRange: string; overpricePercentage: number;
+  insight: string; region: string;
 }
 
-/* ------------------------------------------------------------------ */
-/* COMPONENT                                                          */
-/* ------------------------------------------------------------------ */
-export default function Scanner() {
-  const [currentView,        setCurrentView]        = useState<"globe" | "camera" | "result">("globe");
-  const [scanResult,         setScanResult]         = useState<ScanItem | null>(null);
-  const [userLocation,       setUserLocation]       = useState<Location | null>(null);
-  const [isScanning,         setIsScanning]         = useState(false);
-  const [isInitiatingScan,   setIsInitiatingScan]   = useState(false);
-  const [locationStatus,     setLocationStatus]     = useState<"loading" | "granted" | "denied">("loading");
+/* ----------------------- Inline API calls ---------------------- */
+// Uses Vite proxy: '/api' -> http://127.0.0.1:8001  (set in vite.config.ts)
+async function ping() {
+  const res = await fetch("/api/health");
+  if (!res.ok) throw new Error(`Health failed: ${res.status}`);
+  return res.json();
+}
 
-  /* ----------------------------- GEO ------------------------------ */
+async function scanImage(file: File, loc: Location) {
+  const fd = new FormData();
+  fd.append("image", file);
+  fd.append("location", `${loc.lat},${loc.lng}`);
+
+  const res = await fetch("/api/scan", { method: "POST", body: fd });
+  let body: any = null;
+  try { body = await res.json(); } catch { /* ignore */ }
+
+  if (!res.ok) {
+    const msg = body?.detail || JSON.stringify(body) || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
+/* --------------------------- Component ------------------------- */
+export default function Scanner() {
+  const [currentView, setCurrentView] = useState<"globe" | "camera" | "result">("globe");
+  const [scanResult, setScanResult]   = useState<ScanItem | null>(null);
+  const [userLocation, setUserLocation] = useState<Location | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [isInitiatingScan, setIsInitiatingScan] = useState(false);
+  const [locationStatus, setLocationStatus] = useState<"loading" | "granted" | "denied">("loading");
+  const [cameraPermission, setCameraPermission] = useState<"granted" | "denied" | "unknown">("unknown");
+  const [showUI, setShowUI] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /* Prove wire on mount */
+  useEffect(() => {
+    (async () => {
+      try {
+        const h = await ping();
+        console.log("API HEALTH →", h);
+      } catch (e) {
+        console.error("API HEALTH FAIL →", e);
+      }
+    })();
+  }, []);
+
+  /* Geolocation */
   useEffect(() => {
     if (!navigator.geolocation) {
-      console.warn("Geolocation not supported, using fallback location");
-      setUserLocation({ lat: 26.9124, lng: 75.7873 }); // Jaipur fallback
+      setUserLocation({ lat: 26.9124, lng: 75.7873 });
       setLocationStatus("denied");
       return;
     }
-
-    const options = {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 300000 // 5 minutes cache
-    };
-
     navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const location = { 
-          lat: position.coords.latitude, 
-          lng: position.coords.longitude 
-        };
-        console.log("📍 User location obtained:", location);
-        setUserLocation(location);
+      (pos) => {
+        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
         setLocationStatus("granted");
       },
-      (error) => {
-        console.warn("Geolocation denied or failed:", error.message);
-        // Use fallback location (Jaipur coordinates)
+      () => {
         setUserLocation({ lat: 26.9124, lng: 75.7873 });
         setLocationStatus("denied");
       },
-      options
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
     );
   }, []);
 
-  /* --------------------------- HANDLERS --------------------------- */
-  const handleScanNow = () => {
-    console.log("🚀 Starting scan process...");
-    setIsInitiatingScan(true);
+  const handleScanNow = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(t => t.stop());
+      setCameraPermission("granted");
+      setIsInitiatingScan(true);
+      setShowUI(false);
+    } catch {
+      setCameraPermission("denied");
+    }
+  };
+
+  const handleUploadPhoto = () => fileInputRef.current?.click();
+
+  // REAL upload → backend scan
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const loc = userLocation ?? { lat: 26.9124, lng: 75.7873 };
+
+    try {
+      setIsScanning(true);
+      console.log("UPLOAD →", file.name, "→ /api/scan");
+
+      const data = await scanImage(file, loc);
+      console.log("SCAN RESULT →", data);
+
+      const result: ScanItem = {
+        name: data?.detected_item ?? "Detected Item",
+        emoji: "🛍️",
+        detectedPrice: Number(data?.chatgpt_price_estimate_value ?? data?.detectedPrice ?? 0),
+        localPrice: Number(data?.local_price_estimate_value ?? data?.localPrice ?? 0),
+        currency: data?.currency_symbol ?? data?.currency ?? "₹",
+        localRange: data?.local_range ?? data?.localRange ?? "—",
+        overpricePercentage: Number(data?.overpricePercentage ?? 0),
+        insight: data?.insight ?? "AI analysis",
+        region: data?.region ?? "Local Market",
+      };
+
+      setScanResult(result);
+      setCurrentView("result");
+    } catch (err: any) {
+      console.error("UPLOAD/SCAN ERROR →", err);
+      alert(`Scan failed: ${err?.message || err}`);
+    } finally {
+      setIsScanning(false);
+      event.target.value = ""; // allow same file again
+    }
   };
 
   const handleZoomComplete = () => {
-    console.log("🌍 Globe zoom complete, switching to camera");
     setCurrentView("camera");
-    setTimeout(() => {
-      console.log("📷 Starting camera scan");
-      setIsScanning(true);
-    }, 500);
+    setTimeout(() => setIsScanning(true), 500);
     setIsInitiatingScan(false);
   };
 
-  // NEW: Handle real scan results from backend
   const handleScanComplete = (result: ScanItem) => {
-    console.log("✅ Scan completed with result:", result);
     setScanResult(result);
     setCurrentView("result");
     setIsScanning(false);
   };
 
-  // Keep the old simulate function as fallback (you can remove this later)
-  const simulateScan = () => {
-    console.log("🎭 Using simulated scan (fallback)");
-    const items: ScanItem[] = [
-      { 
-        name: "Veg Biryani Plate", 
-        emoji: "🥘", 
-        detectedPrice: 180, 
-        localPrice: 160,
-        currency: "₹", 
-        localRange: "₹140–₹180", 
-        overpricePercentage: 13,
-        insight: "This is what you'd pay at a local dhaba", 
-        region: "Mumbai" 
-      },
-      { 
-        name: "Wooden Elephant Figurine", 
-        emoji: "🐘", 
-        detectedPrice: 300, 
-        localPrice: 150,
-        currency: "₹", 
-        localRange: "₹100–₹160", 
-        overpricePercentage: 100,
-        insight: "Slightly above market — maybe a touristy spot", 
-        region: "Jaipur" 
-      },
-      { 
-        name: "Fresh Coconut Water", 
-        emoji: "🥥", 
-        detectedPrice: 40, 
-        localPrice: 35,
-        currency: "₹", 
-        localRange: "₹30–₹40", 
-        overpricePercentage: 14,
-        insight: "Vendors charge more during festivals", 
-        region: "Goa" 
-      }
-    ];
-
-    const randomItem = items[Math.floor(Math.random() * items.length)];
-
-    setTimeout(() => {
-      setScanResult(randomItem);
-      setCurrentView("result");
-      setIsScanning(false);
-    }, 2000);
-  };
-
   const resetToGlobe = () => {
-    console.log("🔄 Resetting to globe view");
     setCurrentView("globe");
     setScanResult(null);
     setIsScanning(false);
     setIsInitiatingScan(false);
+    setCameraPermission("unknown");
+    setTimeout(() => setShowUI(true), 300);
   };
 
   const handleScanAgain = () => {
-    console.log("🔄 Starting new scan");
     setCurrentView("camera");
     setScanResult(null);
     setTimeout(() => setIsScanning(true), 500);
   };
 
-  /* ------------------------------------------------------------------ */
-  /* RENDER                                                             */
-  /* ------------------------------------------------------------------ */
+  const handleTryAgain = () => {
+    setCameraPermission("unknown");
+    handleScanNow();
+  };
+
+  const { globe, dpr } = useResponsiveSize();
+
   return (
-    <div className="min-h-screen bg-black overflow-hidden">
-      {/* radial aura bg */}
-      <div
-        className="fixed inset-0"
-        style={{
-          background:
-            "radial-gradient(circle at center, rgba(38,70,145,0.2) 0%, transparent 60%)",
-        }}
+    <div className="min-h-[100svh] w-full max-w-md mx-auto px-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] flex flex-col items-center justify-center gap-5 short:gap-4 xshort:gap-3 xshort:pt-0 xshort:pb-1">
+      {/* Hidden file input for upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFileSelect}
+        className="hidden"
       />
 
-      {/* Debug location status (remove in production) */}
-      {process.env.NODE_ENV === 'development' && (
-        <div className="fixed top-4 right-4 z-50 bg-black/80 text-white text-xs p-2 rounded">
-          📍 Location: {locationStatus === "loading" ? "Loading..." : locationStatus}
+      {/* Dev Debug Info */}
+      {import.meta.env.DEV && (
+        <div className="fixed top-4 right-4 z-50 bg-black/80 backdrop-blur text-white text-xs p-3 rounded-lg border border-white/10">
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${
+              locationStatus === 'granted' ? 'bg-green-500' :
+              locationStatus === 'denied' ? 'bg-red-500' : 'bg-yellow-500'
+            }`} />
+            {locationStatus}
+          </div>
           {userLocation && (
-            <div>
+            <div className="mt-1 font-mono">
               {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
             </div>
           )}
         </div>
       )}
 
-      <AnimatePresence mode="wait">
-        {/* ───────── GLOBE VIEW ───────── */}
+      <AnimatePresence mode="wait" initial={false}>
         {currentView === "globe" && (
           <motion.div
             key="globe"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0, scale: 2 }}
-            transition={{ duration: 0.8 }}
-            className="relative z-10 flex flex-col items-center justify-center min-h-screen p-6"
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="flex flex-col items-center space-y-6"
           >
-            {/* header */}
-            <motion.div
-              className="absolute top-16 text-center"
-              initial={{ y: -50, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              transition={{ delay: 0.2, duration: 0.5 }}
-            >
-              <h1 className="text-4xl font-bold text-white mb-2">Fairlo</h1>
-              <p className="text-gray-300 text-lg">Know the Real Price</p>
-              {locationStatus === "denied" && (
-                <p className="text-yellow-400 text-sm mt-2">
-                  📍 Using default location - enable GPS for better results
-                </p>
+            {/* Header */}
+            <AnimatePresence>
+              {showUI && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }} className="text-center">
+                  <motion.h1
+                    className="text-center font-extrabold tracking-tight text-white xxs:text-[28px] xs:text-[30px] sm:text-[34px] md:text-[40px] leading-[1.05]"
+                    style={{ fontSize: 'clamp(24px, 6vw, 40px)' }}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1, duration: 0.3 }}
+                  >
+                    Scan anything.<br />Get a fair<br />local price.
+                  </motion.h1>
+                  <motion.p
+                    className="text-center text-white/70 text-[clamp(12px,3.5vw,16px)] max-w-sm mx-auto"
+                    initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.3 }}
+                  >
+                    Point your camera at a product or menu. We estimate what locals actually pay—fast.
+                  </motion.p>
+                </motion.div>
               )}
-            </motion.div>
+            </AnimatePresence>
 
-            {/* globe + rings */}
-            <div className="flex-1 flex items-center justify-center w-full max-w-lg relative">
-              <div className="absolute w-full h-full flex items-center justify-center pointer-events-none">
-                {[...Array(3)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="absolute border border-blue-400/20 rounded-full"
-                    style={{
-                      animation:
-                        "pulse 4s cubic-bezier(0.4,0,0.6,1) infinite",
-                      animationDelay: `${i * 1.3}s`,
-                      width: `${320 + i * 80}px`,
-                      height: `${320 + i * 80}px`,
-                    }}
+            {/* Globe */}
+            <AnimatePresence>
+              {showUI && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
+                  transition={{ delay: 0.3, duration: 0.4 }}
+                  className="mt-1 mx-auto rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-[0_10px_30px_rgba(0,0,0,0.35)] flex items-center justify-center"
+                  style={{ width: globe, height: globe }}
+                >
+                  <GlobeComponent
+                    size={globe} dpr={dpr} className="w-full h-full"
+                    zoom={isInitiatingScan} onZoomComplete={handleZoomComplete}
+                    allowUserRotate={!isInitiatingScan} showStars={true} forceSolid={false}
                   />
-                ))}
-              </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-              <GlobeComponent
-                userLocation={userLocation}
-                isZooming={isInitiatingScan}
-                onZoomComplete={handleZoomComplete}
-              />
-            </div>
+            {/* Actions */}
+            <AnimatePresence>
+              {showUI && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }}
+                  transition={{ delay: 0.4, duration: 0.3 }}
+                  className="w-full max-w-[520px] flex flex-col gap-2 short:gap-2"
+                >
+                  <button
+                    onClick={handleScanNow} disabled={isInitiatingScan}
+                    className="w-full h-14 rounded-2xl font-semibold text-lg flex items-center justify-center gap-2 bg-[#3B82F6] text-white shadow-lg hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50"
+                    aria-label="Scan Now"
+                  >
+                    <Scan className="w-5 h-5" /> Scan Now
+                  </button>
 
-            {/* scan btn */}
-            <motion.div
-              className="absolute bottom-12 w-full px-6"
-              initial={{ y: 100, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              transition={{ delay: 0.4, duration: 0.5 }}
-            >
-              <Button
-                onClick={handleScanNow}
-                disabled={isInitiatingScan}
-                className="w-full h-16 bg-blue-600 hover:bg-blue-700 text-white text-xl font-semibold rounded-2xl shadow-2xl shadow-blue-500/30 transition-all duration-300 transform hover:scale-105 active:scale-95 disabled:opacity-50"
-              >
-                <Scan className="w-6 h-6 mr-3" />
-                {isInitiatingScan ? "Locating..." : "Scan Now"}
-              </Button>
-            </motion.div>
+                  <button
+                    onClick={handleUploadPhoto}
+                    className="w-full h-14 rounded-2xl font-semibold text-lg flex items-center justify-center gap-2 bg-white/5 text-white border border-white/10 hover:bg-white/7 transition-all"
+                    aria-label="Upload Photo"
+                  >
+                    <Upload className="w-5 h-5" /> Upload Photo
+                  </button>
+
+                  {import.meta.env.DEV && (
+                    <button
+                      onClick={() => ping().then(d => console.log("Ping:", d)).catch(e => console.error(e))}
+                      className="text-xs text-white/60 underline self-center mt-1"
+                    >
+                      Test API
+                    </button>
+                  )}
+
+                  <div className="space-y-3">
+                    <p className="text-xs text-white/60 text-center">We only use your camera for the scan.</p>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <div className="px-3 h-8 text-xs rounded-full border border-white/10 bg-white/5 text-white/90">2–3s estimate</div>
+                      <div className="px-3 h-8 text-xs rounded-full border border-white/10 bg-white/5 text-white/90">Crowd-checked</div>
+                      <div className="px-3 h-8 text-xs rounded-full border border-white/10 bg-white/5 text-white/90">Local pricing focus</div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         )}
 
-        {/* ───────── CAMERA VIEW ───────── */}
-        {currentView === "camera" && (
-          <CameraView
-            isScanning={isScanning}
-            onScanComplete={handleScanComplete} // NOW USING REAL BACKEND!
-            onBack={resetToGlobe}
-            userLocation={userLocation} // Pass location to camera
-          />
+        {/* Camera Permission Fallback */}
+        {currentView === "globe" && cameraPermission === "denied" && (
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full">
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 backdrop-blur-xl">
+              <h3 className="text-white text-lg font-semibold mb-2">Camera is blocked</h3>
+              <p className="text-white/70 text-sm mb-4">
+                To scan instantly, allow camera access in your browser settings or upload a photo instead.
+              </p>
+              <div className="flex flex-col gap-2">
+                <button onClick={handleTryAgain} className="h-12 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl">Try Again</button>
+                <button onClick={handleUploadPhoto} className="h-12 bg-black/20 border border-white/20 hover:bg-black/30 text-white font-semibold rounded-xl">Upload Photo</button>
+              </div>
+            </div>
+          </motion.div>
         )}
 
-        {/* ───────── RESULT CARD ───────── */}
+        {currentView === "camera" && (
+          <motion.div key="camera" initial={{ opacity: 0, scale: 1.02 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }} transition={{ duration: 0.18 }} className="w-full h-full">
+            <CameraView isScanning={isScanning} onScanComplete={handleScanComplete} onBack={resetToGlobe} userLocation={userLocation} />
+          </motion.div>
+        )}
+
         {currentView === "result" && scanResult && (
-          <ResultCard
-            result={scanResult}
-            onClose={resetToGlobe}
-            onScanAgain={handleScanAgain} // Updated to use real scan
-          />
+          <motion.div key="result" initial={{ opacity: 0, scale: 1.02 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }} transition={{ duration: 0.18 }} className="w-full h-full">
+            <ResultCard result={scanResult} onClose={resetToGlobe} onScanAgain={handleScanAgain} />
+          </motion.div>
         )}
       </AnimatePresence>
-
-      {/* pulse keyframes */}
-      <style>{`
-        @keyframes pulse {
-          0%,100% {opacity: 0; transform: scale(0.9);}
-          50%     {opacity: 1; transform: scale(1.05);}
-        }
-      `}</style>
     </div>
   );
 }
